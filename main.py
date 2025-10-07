@@ -69,10 +69,13 @@ def compute_gradients(data: np.ndarray, mean: float, log_std: float, config: Mod
 def run_variational_inference(
     data: np.ndarray,
     config: ModelConfig,
-    lr: float = 0.05,
+    lr: float = 0.02,
     steps: int = 600,
     init_mean: float = 0.0,
     init_log_std: float = math.log(1.0),
+    backtracking: int = 8,
+    shrink: float = 0.5,
+    min_step: float = 1e-6,
 ) -> VIResult:
     mean = init_mean
     log_std = init_log_std
@@ -82,13 +85,48 @@ def run_variational_inference(
     stds: List[float] = []
 
     for _ in range(steps):
-        elbo_values.append(compute_elbo(data, mean, log_std, config))
+        current_elbo = compute_elbo(data, mean, log_std, config)
+        elbo_values.append(current_elbo)
         means.append(mean)
         stds.append(math.exp(log_std))
 
         grad_mean, grad_log_std = compute_gradients(data, mean, log_std, config)
-        mean += lr * grad_mean
-        log_std += lr * grad_log_std
+
+        step_scale = 1.0
+        accepted = False
+        candidate_mean = mean
+        candidate_log_std = log_std
+        candidate_elbo = current_elbo
+
+        for _ in range(backtracking):
+            step = lr * step_scale
+            trial_mean = mean + step * grad_mean
+            trial_log_std = log_std + step * grad_log_std
+            trial_elbo = compute_elbo(data, trial_mean, trial_log_std, config)
+
+            if math.isfinite(trial_elbo) and trial_elbo >= current_elbo:
+                candidate_mean = trial_mean
+                candidate_log_std = trial_log_std
+                candidate_elbo = trial_elbo
+                accepted = True
+                break
+
+            step_scale *= shrink
+            if step_scale < min_step:
+                break
+
+        if not accepted:
+            # If no improving step was found, fall back to the best finite trial we computed.
+            candidate_mean = mean + lr * step_scale * grad_mean
+            candidate_log_std = log_std + lr * step_scale * grad_log_std
+            candidate_elbo = compute_elbo(data, candidate_mean, candidate_log_std, config)
+            if not math.isfinite(candidate_elbo) or candidate_elbo < current_elbo:
+                # Keep the previous iterate to avoid divergence and exit early.
+                break
+
+        mean = candidate_mean
+        log_std = candidate_log_std
+        elbo_values[-1] = candidate_elbo
 
     return VIResult(mean=mean, std=math.exp(log_std), elbo_values=elbo_values, means=means, stds=stds)
 
@@ -171,7 +209,7 @@ def main():
 
     describe_math(data, config)
 
-    vi_result = run_variational_inference(data, config, lr=0.08, steps=800)
+    vi_result = run_variational_inference(data, config, lr=0.02, steps=800)
     exact_posterior = closed_form_posterior(data, config)
 
     print("\n=== 对比结果 ===")
