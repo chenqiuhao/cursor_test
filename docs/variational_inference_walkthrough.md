@@ -11,9 +11,7 @@
 
 记观测数量为 $N$，则联合分布为
 
-\[
- p(y, \mu) = \left( \prod_{i=1}^N \mathcal{N}(y_i \mid \mu, \sigma^2) \right) \mathcal{N}(\mu \mid 0, \tau^2).
-\]
+$ p(y, \mu) = \left( \prod_{i=1}^N \mathcal{N}(y_i \mid \mu, \sigma^2) \right) \mathcal{N}(\mu \mid 0, \tau^2). $
 
 与之对应的代码初始化模型配置与生成模拟数据：
 
@@ -37,23 +35,39 @@ def generate_data(true_mean: float, size: int, config: ModelConfig, seed: int = 
 $ q(\mu; m, s^2) = \mathcal{N}(m, s^2). $
 
 ELBO（Evidence Lower Bound）定义为
-\[
-\mathcal{L}(m, s) = \mathbb{E}_q[\log p(y, \mu)] - \mathbb{E}_q[\log q(\mu)].
-\]
-将联合分布拆分得到三项：
+$ \mathcal{L}(m, s) = \mathbb{E}_q[\log p(y, \mu)] - \mathbb{E}_q[\log q(\mu)]. $
+为了让每一项的来源更加透明，下面逐一给出推导细节，并解释每一步为什么成立。
 
-1. **数据拟合项**
-   \[
-   \mathbb{E}_q[\log p(y \mid \mu)] = -\tfrac{1}{2}N\log(2\pi\sigma^2) - \tfrac{1}{2\sigma^2}\sum_{i=1}^{N} \left((y_i - m)^2 + s^2\right).
-   \]
-2. **先验项**
-   \[
-   \mathbb{E}_q[\log p(\mu)] = -\tfrac{1}{2}\log(2\pi\tau^2) - \tfrac{1}{2\tau^2}(s^2 + m^2).
-   \]
-3. **熵项**
-   \[
-   -\mathbb{E}_q[\log q(\mu)] = \tfrac{1}{2} \bigl(1 + \log(2\pi)\bigr) + \log s.
-   \]
+1. **数据拟合项：如何把随机变量代入平方项？**
+
+   - 先展开对数似然：$ \log p(y \mid \mu) = -\tfrac{N}{2} \log(2\pi\sigma^2) - \tfrac{1}{2\sigma^2} \sum_{i=1}^N (y_i - \mu)^2 $。
+   - 为了在期望中替换 $\mu$，把平方项写成 $(y_i - m + m - \mu)^2 = (y_i - m)^2 + (\mu - m)^2 - 2(y_i - m)(\mu - m)$。
+   - 在 $q(\mu)$ 下，$\mathbb{E}[\mu - m] = 0$，因此交叉项 $\mathbb{E}[(y_i - m)(\mu - m)]$ 消失；而 $\mathbb{E}[(\mu - m)^2] = s^2$。
+   - 整理后得到
+     $ \mathbb{E}_q[\log p(y \mid \mu)] = -\tfrac{1}{2}N\log(2\pi\sigma^2) - \tfrac{1}{2\sigma^2}\sum_{i=1}^{N} \left((y_i - m)^2 + s^2\right). $
+
+   **可视化角度**：在 `figures/inference_panels.png` 左上角的直方图中，橙色的 $q(\mu)$ 均值位置是否与灰色样本均值对齐，就对应着这里的 $(y_i - m)^2$ 收缩；曲线宽度则对应 $s^2$ 是否被惩罚。
+
+2. **先验项：为什么会有 $m^2$ 和 $s^2$？**
+
+   - 对数先验为 $ \log p(\mu) = -\tfrac{1}{2} \log(2\pi\tau^2) - \tfrac{1}{2\tau^2} \mu^2 $。
+   - 使用同样的中心化技巧：$ \mu^2 = (\mu - m + m)^2 = (\mu - m)^2 + 2m(\mu - m) + m^2 $。
+   - 期望后交叉项仍为零，剩下 $s^2$ 与 $m^2$。
+   - 因此
+     $ \mathbb{E}_q[\log p(\mu)] = -\tfrac{1}{2}\log(2\pi\tau^2) - \tfrac{1}{2\tau^2}(s^2 + m^2). $
+
+   **可视化角度**：在 `figures/elbo_decomposition.png` 中，绿色的先验项曲线在 $m$ 远离 0 时下滑，就是这个惩罚项的体现；同时如果 $s$ 太宽，曲线也会下降。
+
+3. **熵项：为何与 $\log s$ 线性相关？**
+
+   - 高斯分布熵的封闭解是 $ H[\mathcal{N}(m, s^2)] = \tfrac{1}{2} \log(2\pi e s^2) $。
+   - 展开成 $ \tfrac{1}{2} (1 + \log(2\pi)) + \log s $ 就能看到熵与 $s$ 的直接关系。
+   - 因此
+     $ -\mathbb{E}_q[\log q(\mu)] = \tfrac{1}{2} \bigl(1 + \log(2\pi)\bigr) + \log s. $
+
+   **可视化角度**：在 `figures/elbo_decomposition.png` 中，蓝色熵曲线随着 $s$ 收缩而下降，提醒我们在追求拟合数据的同时保持足够的不确定性。
+
+三项相加得到完整的 ELBO。由于每一项都能在图像里找到对应的变化，我们可以把公式与可视化一一对照。
 
 脚本中的 `compute_elbo_terms` 对应以上推导：
 
@@ -80,16 +94,28 @@ def compute_elbo_terms(data: np.ndarray, mean: float, log_std: float, config: Mo
 
 ## 3. 梯度与优化策略
 
-为了用梯度上升最大化 ELBO，我们对 $m$ 和 $\log s$ 求偏导：
+为了用梯度上升最大化 ELBO，我们对 $m$ 和 $\log s$ 求偏导。推导步骤如下：
 
 - 均值方向的梯度
-  \[
-  \frac{\partial \mathcal{L}}{\partial m} = -\frac{1}{\sigma^2} \sum_{i=1}^N (m - y_i) - \frac{m}{\tau^2}.
-  \]
+
+  1. 只需要考虑含 $m$ 的项：数据项里的 $\sum (y_i - m)^2$ 和先验项里的 $m^2$。
+  2. 对 $m$ 求导得到 $ \partial (y_i - m)^2 / \partial m = 2(m - y_i) $，$ \partial m^2 / \partial m = 2m $。
+  3. 将系数带入 ELBO 中的常数，得到
+     $ \frac{\partial \mathcal{L}}{\partial m} = -\frac{1}{\sigma^2} \sum_{i=1}^N (m - y_i) - \frac{m}{\tau^2}. $
+
+  这个梯度由“数据推动 $m$ 靠近样本均值”和“先验拉回 0”两部分构成。
+
 - $\log s$ 方向的梯度
-  \[
-  \frac{\partial \mathcal{L}}{\partial \log s} = 1 - \left(\frac{N}{\sigma^2} + \frac{1}{\tau^2}\right) s^2.
-  \]
+
+  1. 记 $s = e^{\log s}$，因此 $\frac{\partial s}{\partial \log s} = s$，$\frac{\partial s^2}{\partial \log s} = 2 s^2$。
+  2. 数据项和先验项都含 $s^2$，分别给出 $-\tfrac{1}{2\sigma^2} N \cdot 2 s^2$ 与 $-\tfrac{1}{2\tau^2} \cdot 2 s^2$。
+  3. 熵项的导数为 $\frac{\partial}{\partial \log s}(\log s) = 1$。
+  4. 合并系数得到
+     $ \frac{\partial \mathcal{L}}{\partial \log s} = 1 - \left(\frac{N}{\sigma^2} + \frac{1}{\tau^2}\right) s^2. $
+
+  因此当 $s^2$ 大于“目标方差”$ \left(\frac{N}{\sigma^2} + \frac{1}{\tau^2}\right)^{-1} $时，梯度为负，会促使 $s$ 收缩。
+
+将两个梯度合并，就得到了 `compute_gradients` 中的实现。再配合 `figures/inference_panels.png` 左下角的参数轨迹，可以看到红线（$m_t$）和蓝线（$s_t$）确实沿着上述方向单调调整：当红线高于样本均值时，梯度为负把它拉回；当蓝线高于目标方差时，梯度也为负从而使得 $s$ 缩小。
 
 `compute_gradients` 直接实现了上述公式：
 
@@ -124,7 +150,7 @@ def run_variational_inference(..., lr: float = 0.02, backtracking: int = 8, shri
     ...
 ```
 
-只有当候选步长使 ELBO 不下降时才接受更新，否则逐步缩小步长；多次失败后提前终止，以防数值发散。函数返回的 `VIResult` 记录了每次迭代的 $m, s, \text{ELBO}$ 以及三项分解值，便于后续可视化。
+只有当候选步长使 ELBO 不下降时才接受更新，否则逐步缩小步长；多次失败后提前终止，以防数值发散。这与 `figures/elbo_landscape.png` 中白色折线的“折返”一致：当某步过大导致 ELBO 降低时，线搜索会缩短步长并重新尝试，确保轨迹始终沿着等高线缓慢爬升。函数返回的 `VIResult` 记录了每次迭代的 $m, s, \text{ELBO}$ 以及三项分解值，便于后续可视化。
 
 ## 4. 图像解读与生成
 
