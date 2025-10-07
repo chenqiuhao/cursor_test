@@ -40,3 +40,17 @@ python main.py
 ```
 
 运行后终端会打印模型与公式说明，弹出的图像窗口展示分布对比与 ELBO 曲线。
+
+> 依赖：脚本默认使用 `numpy` 与 `matplotlib`，请在本地环境提前安装。
+
+若希望将图像保存成静态文件方便阅读推导笔记，可执行：
+
+```bash
+python main.py --save-dir figures --no-show
+```
+
+命令会在 `figures/` 目录下生成三张 PNG，用于文档配图。
+
+### 详细推导笔记
+
+更完整的数学推导、对应代码段以及图像解读请参见 [`docs/variational_inference_walkthrough.md`](docs/variational_inference_walkthrough.md)。

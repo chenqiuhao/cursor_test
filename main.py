@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Tuple
 
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import numpy as np
 
 
@@ -211,12 +214,24 @@ def _choose_snapshot_indices(length: int, desired: int = 5) -> List[int]:
     return sorted(indices)
 
 
+def _finalize_figure(fig: Figure, save_path: Path | None, show: bool) -> Path | None:
+    if save_path is not None:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    if show:
+        plt.show()
+    plt.close(fig)
+    return save_path
+
+
 def visualize_inference_steps(
     data: np.ndarray,
     config: ModelConfig,
     vi_result: VIResult,
     exact_posterior: Tuple[float, float],
-) -> None:
+    save_path: Path | None = None,
+    show: bool = True,
+) -> Path | None:
     prior_mean = 0.0
     prior_std = math.sqrt(config.prior_var)
     exact_mean, exact_std = exact_posterior
@@ -289,8 +304,89 @@ def visualize_inference_steps(
     ax_elbo.set_ylabel("ELBO")
     ax_elbo.grid(alpha=0.3)
 
-    plt.tight_layout()
-    plt.show()
+    fig.tight_layout()
+    return _finalize_figure(fig, save_path, show)
+
+
+def visualize_elbo_decomposition(
+    vi_result: VIResult, save_path: Path | None = None, show: bool = True
+) -> Path | None:
+    """Plot how each ELBO component evolves over iterations."""
+
+    iterations = np.arange(len(vi_result.elbo_terms))
+    expected_ll = [term[0] for term in vi_result.elbo_terms]
+    expected_prior = [term[1] for term in vi_result.elbo_terms]
+    entropy = [term[2] for term in vi_result.elbo_terms]
+
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+    axes[0].plot(iterations, expected_ll, color="#1f77b4")
+    axes[0].set_title("Data fit term E_q[log p(y | μ)]")
+    axes[0].set_xlabel("Iteration")
+    axes[0].set_ylabel("Contribution")
+    axes[0].grid(alpha=0.3)
+
+    axes[1].plot(iterations, expected_prior, color="#ff7f0e")
+    axes[1].set_title("Prior term E_q[log p(μ)]")
+    axes[1].set_xlabel("Iteration")
+    axes[1].grid(alpha=0.3)
+
+    axes[2].plot(iterations, entropy, color="#2ca02c")
+    axes[2].set_title("Entropy term −E_q[log q(μ)]")
+    axes[2].set_xlabel("Iteration")
+    axes[2].grid(alpha=0.3)
+
+    fig.suptitle("How each ELBO component steers the optimisation")
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
+    return _finalize_figure(fig, save_path, show)
+
+
+def visualize_elbo_landscape(
+    data: np.ndarray,
+    config: ModelConfig,
+    vi_result: VIResult,
+    save_path: Path | None = None,
+    show: bool = True,
+) -> Path | None:
+    """Show the ELBO surface over (mean, log_std) with the optimisation path."""
+
+    means = np.array(vi_result.means)
+    log_stds = np.log(np.array(vi_result.stds))
+
+    mean_min = float(min(means.min(), np.mean(data) - 2.0))
+    mean_max = float(max(means.max(), np.mean(data) + 2.0))
+    log_std_min = float(log_stds.min() - 0.8)
+    log_std_max = float(log_stds.max() + 0.8)
+
+    grid_means = np.linspace(mean_min, mean_max, 120)
+    grid_log_stds = np.linspace(log_std_min, log_std_max, 120)
+    elbo_grid = np.empty((grid_log_stds.size, grid_means.size))
+
+    for i, log_std in enumerate(grid_log_stds):
+        for j, mean in enumerate(grid_means):
+            elbo_grid[i, j] = compute_elbo(data, mean, log_std, config)
+
+    fig, ax = plt.subplots(figsize=(7.5, 5.5))
+    contour = ax.contourf(
+        grid_means,
+        grid_log_stds,
+        elbo_grid,
+        levels=30,
+        cmap="viridis",
+    )
+    plt.colorbar(contour, ax=ax, label="ELBO value")
+
+    ax.plot(vi_result.means, log_stds, color="white", linewidth=2.0, label="Gradient ascent path")
+    ax.scatter(vi_result.means[0], log_stds[0], color="yellow", edgecolor="black", zorder=3, label="Start")
+    ax.scatter(vi_result.means[-1], log_stds[-1], color="red", edgecolor="black", zorder=3, label="Finish")
+
+    ax.set_title("ELBO landscape over variational parameters")
+    ax.set_xlabel("Mean parameter m")
+    ax.set_ylabel("Log standard deviation log s")
+    ax.legend(loc="best")
+    ax.grid(alpha=0.2, color="white")
+
+    fig.tight_layout()
+    return _finalize_figure(fig, save_path, show)
 
 
 def visualize_elbo_decomposition(vi_result: VIResult) -> None:
@@ -457,7 +553,26 @@ def explain_elbo_terms(
     )
 
 
-def main():
+def main(argv: List[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Gaussian mean-field variational inference demo")
+    parser.add_argument(
+        "--save-dir",
+        type=Path,
+        default=None,
+        help="Directory to save figures instead of (or in addition to) showing them.",
+    )
+    parser.add_argument(
+        "--no-show",
+        action="store_true",
+        help="Skip displaying interactive matplotlib windows.",
+    )
+    args = parser.parse_args(argv)
+
+    save_dir = args.save_dir
+    show_plots = not args.no_show
+    if save_dir is not None:
+        save_dir.mkdir(parents=True, exist_ok=True)
+
     config = ModelConfig(obs_std=1.0, prior_var=25.0)
     data = generate_data(true_mean=2.5, size=30, config=config, seed=2024)
 
@@ -473,9 +588,42 @@ def main():
 
     print_step_explanations(data, config, vi_result, exact_posterior)
     explain_elbo_terms(data, config, vi_result)
-    visualize_inference_steps(data, config, vi_result, exact_posterior)
-    visualize_elbo_decomposition(vi_result)
-    visualize_elbo_landscape(data, config, vi_result)
+
+    saved_paths: List[Path] = []
+
+    result = visualize_inference_steps(
+        data,
+        config,
+        vi_result,
+        exact_posterior,
+        save_path=save_dir / "inference_panels.png" if save_dir is not None else None,
+        show=show_plots,
+    )
+    if result is not None:
+        saved_paths.append(result)
+
+    result = visualize_elbo_decomposition(
+        vi_result,
+        save_path=save_dir / "elbo_decomposition.png" if save_dir is not None else None,
+        show=show_plots,
+    )
+    if result is not None:
+        saved_paths.append(result)
+
+    result = visualize_elbo_landscape(
+        data,
+        config,
+        vi_result,
+        save_path=save_dir / "elbo_landscape.png" if save_dir is not None else None,
+        show=show_plots,
+    )
+    if result is not None:
+        saved_paths.append(result)
+
+    if saved_paths:
+        print("\nSaved figure files:")
+        for path in saved_paths:
+            print(f"  - {path}")
 
 
 if __name__ == "__main__":
