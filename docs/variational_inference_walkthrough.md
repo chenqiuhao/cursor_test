@@ -10,6 +10,7 @@
 - 先验分布：$\mu \sim \mathcal{N}(0, \tau^2)$。
 
 记观测数量为 $N$，则联合分布为
+
 \[
  p(y, \mu) = \left( \prod_{i=1}^N \mathcal{N}(y_i \mid \mu, \sigma^2) \right) \mathcal{N}(\mu \mid 0, \tau^2).
 \]
@@ -33,9 +34,7 @@ def generate_data(true_mean: float, size: int, config: ModelConfig, seed: int = 
 ## 2. 选择变分族并构造 ELBO
 
 我们用单变量高斯作为变分族：
-\[
-q(\mu; m, s^2) = \mathcal{N}(m, s^2).
-\]
+$ q(\mu; m, s^2) = \mathcal{N}(m, s^2). $
 
 ELBO（Evidence Lower Bound）定义为
 \[
@@ -146,7 +145,7 @@ python main.py --save-dir figures --no-show
 3. **左下：参数轨迹** —— 红线记录 $m_t$，蓝线记录 $s_t$；虚线为解析后验的目标值。可以看到 $m_t$ 迅速靠近样本均值，而 $s_t$ 逐渐收缩到解析后验的方差。
 4. **右下：ELBO 收敛** —— 显示 $\mathcal{L}(m_t, s_t)$ 随迭代单调上升，验证回溯线搜索的作用。
 
-### 4.2 ELBO 三项分量（文件：`figures/elbo_decomposition.png`）
+### 4.2 ELBO 三项分量（文件：`../figures/elbo_decomposition.png`）
 
 `visualize_elbo_decomposition` 输出的图像展示三条曲线，分别对应上一节推导的三项：
 
@@ -156,7 +155,7 @@ python main.py --save-dir figures --no-show
 
 三者合起来就是 ELBO 的竞争平衡。
 
-### 4.3 ELBO 等高线与优化轨迹（文件：`figures/elbo_landscape.png`）
+### 4.3 ELBO 等高线与优化轨迹（文件：![figures/elbo_landscape.png](../figures/elbo_landscape.png)）
 
 `visualize_elbo_landscape` 生成的等高线图以 $m$ 为横轴、$\log s$ 为纵轴，底色编码 $\mathcal{L}(m, \log s)$ 的数值。白色折线是梯度上升路径，黄色点为初始位置，红点为收敛位置。可以直观看到：
 
