@@ -80,12 +80,15 @@ def run_variational_inference(
     mean = init_mean
     log_std = init_log_std
 
-    elbo_values: List[float] = [compute_elbo(data, mean, log_std, config)]
-    means: List[float] = [mean]
-    stds: List[float] = [math.exp(log_std)]
+    elbo_values: List[float] = []
+    means: List[float] = []
+    stds: List[float] = []
 
     for _ in range(steps):
-        current_elbo = elbo_values[-1]
+        current_elbo = compute_elbo(data, mean, log_std, config)
+        elbo_values.append(current_elbo)
+        means.append(mean)
+        stds.append(math.exp(log_std))
 
         grad_mean, grad_log_std = compute_gradients(data, mean, log_std, config)
 
@@ -120,14 +123,10 @@ def run_variational_inference(
             if not math.isfinite(candidate_elbo) or candidate_elbo < current_elbo:
                 # Keep the previous iterate to avoid divergence and exit early.
                 break
-            accepted = True
 
-        if accepted:
-            mean = candidate_mean
-            log_std = candidate_log_std
-            elbo_values.append(candidate_elbo)
-            means.append(mean)
-            stds.append(math.exp(log_std))
+        mean = candidate_mean
+        log_std = candidate_log_std
+        elbo_values[-1] = candidate_elbo
 
     return VIResult(mean=mean, std=math.exp(log_std), elbo_values=elbo_values, means=means, stds=stds)
 
@@ -163,17 +162,7 @@ def describe_math(data: np.ndarray, config: ModelConfig) -> None:
     print("对 m 和 log s 求导即可得到梯度，从而使用梯度上升最大化 ELBO。")
 
 
-def _choose_snapshot_indices(length: int, desired: int = 5) -> List[int]:
-    desired = max(2, desired)
-    if length <= desired:
-        return list(range(length))
-    step = (length - 1) / (desired - 1)
-    indices = {int(round(step * i)) for i in range(desired)}
-    indices.add(length - 1)
-    return sorted(indices)
-
-
-def visualize_inference_steps(
+def plot_results(
     data: np.ndarray,
     config: ModelConfig,
     vi_result: VIResult,
@@ -189,120 +178,29 @@ def visualize_inference_steps(
         coeff = 1.0 / (std * math.sqrt(2.0 * math.pi))
         return coeff * np.exp(-0.5 * ((x - mean) / std) ** 2)
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    plt.figure(figsize=(10, 8))
 
-    # 数据分布与先验
-    ax_hist = axes[0, 0]
-    bins = min(20, max(6, data.size // 2))
-    ax_hist.hist(
-        data,
-        bins=bins,
-        density=True,
-        alpha=0.55,
-        color="#4C72B0",
-        edgecolor="white",
-        label="观测数据",
-    )
-    ax_hist.plot(xs, normal_pdf(xs, prior_mean, prior_std), linestyle="--", color="#8C8C8C", label="先验 N(0, τ²)")
-    ax_hist.axvline(np.mean(data), color="#555555", linestyle=":", label="样本均值")
-    ax_hist.set_title("数据分布与先验")
-    ax_hist.set_xlabel("μ")
-    ax_hist.set_ylabel("密度")
-    ax_hist.legend(loc="best")
+    # Posterior densities panel
+    ax1 = plt.subplot(2, 1, 1)
+    ax1.plot(xs, normal_pdf(xs, prior_mean, prior_std), label="Prior", linestyle="--")
+    ax1.plot(xs, normal_pdf(xs, vi_result.mean, vi_result.std), label="Variational q(μ)")
+    ax1.plot(xs, normal_pdf(xs, exact_mean, exact_std), label="Exact posterior")
+    ax1.axvline(np.mean(data), color="gray", alpha=0.5, label="Sample mean")
+    ax1.set_title("Variational Inference vs. Exact Posterior")
+    ax1.set_xlabel("μ")
+    ax1.set_ylabel("Density")
+    ax1.legend()
 
-    # 迭代中的 q(μ) 形状
-    ax_q = axes[0, 1]
-    snapshot_indices = _choose_snapshot_indices(len(vi_result.means))
-    colors = plt.cm.Oranges(np.linspace(0.35, 0.9, len(snapshot_indices)))
-    for idx, color in zip(snapshot_indices, colors):
-        label = "初始化" if idx == 0 else ("收敛" if idx == len(vi_result.means) - 1 else f"第 {idx} 步")
-        ax_q.plot(xs, normal_pdf(xs, vi_result.means[idx], vi_result.stds[idx]), color=color, label=label)
-    ax_q.plot(xs, normal_pdf(xs, exact_mean, exact_std), color="#2CA02C", linestyle="--", linewidth=1.6, label="精确后验")
-    ax_q.set_title("q(μ) 形状的演化")
-    ax_q.set_xlabel("μ")
-    ax_q.set_ylabel("密度")
-    ax_q.legend(loc="best")
-
-    iterations = np.arange(len(vi_result.means))
-
-    # 均值和标准差轨迹
-    ax_params = axes[1, 0]
-    ax_params.plot(iterations, vi_result.means, color="#D62728", label="q(μ) 均值")
-    ax_params.axhline(exact_mean, color="#2CA02C", linestyle="--", label="精确均值")
-    ax_params.set_title("均值的梯度上升轨迹")
-    ax_params.set_xlabel("迭代步")
-    ax_params.set_ylabel("均值")
-    ax_params.grid(alpha=0.3)
-
-    ax_std = ax_params.twinx()
-    ax_std.plot(iterations, vi_result.stds, color="#1F77B4", label="q(μ) 标准差")
-    ax_std.axhline(exact_std, color="#FF7F0E", linestyle="--", label="精确标准差")
-    ax_std.set_ylabel("标准差")
-
-    handles, labels = ax_params.get_legend_handles_labels()
-    handles2, labels2 = ax_std.get_legend_handles_labels()
-    ax_params.legend(handles + handles2, labels + labels2, loc="best")
-
-    # ELBO 曲线
-    ax_elbo = axes[1, 1]
-    ax_elbo.plot(np.arange(len(vi_result.elbo_values)), vi_result.elbo_values, color="#9467BD")
-    ax_elbo.set_title("ELBO 收敛情况")
-    ax_elbo.set_xlabel("迭代步")
-    ax_elbo.set_ylabel("ELBO")
-    ax_elbo.grid(alpha=0.3)
+    # ELBO convergence panel
+    ax2 = plt.subplot(2, 1, 2)
+    ax2.plot(vi_result.elbo_values)
+    ax2.set_title("ELBO during gradient ascent")
+    ax2.set_xlabel("Iteration")
+    ax2.set_ylabel("ELBO")
+    ax2.grid(alpha=0.3)
 
     plt.tight_layout()
     plt.show()
-
-
-def print_step_explanations(
-    data: np.ndarray,
-    config: ModelConfig,
-    vi_result: VIResult,
-    exact_posterior: Tuple[float, float],
-) -> None:
-    print("\n=== 迭代过程解读 ===")
-    sample_mean = float(np.mean(data))
-    exact_mean, exact_std = exact_posterior
-    print(
-        f"样本均值约为 {sample_mean:.3f}，精确后验为 N({exact_mean:.3f}, {exact_std:.3f}^2)。"
-        " 下面挑选若干关键迭代步进行说明："
-    )
-
-    snapshot_indices = _choose_snapshot_indices(len(vi_result.means))
-    for idx in snapshot_indices:
-        mean = vi_result.means[idx]
-        std = vi_result.stds[idx]
-        elbo = vi_result.elbo_values[idx]
-        grad_mean, grad_log_std = compute_gradients(data, mean, math.log(std), config)
-
-        if idx == 0:
-            stage = "初始化"
-        elif idx == len(vi_result.means) - 1:
-            stage = "收敛状态"
-        else:
-            stage = f"第 {idx} 步"
-
-        direction_mean = "向右（增大均值）" if grad_mean > 1e-6 else ("向左（减小均值）" if grad_mean < -1e-6 else "保持均值")
-        direction_std = "收缩方差" if grad_log_std < -1e-6 else ("增大方差" if grad_log_std > 1e-6 else "保持方差")
-
-        delta_text = ""
-        if idx > 0:
-            delta_mean = mean - vi_result.means[idx - 1]
-            delta_std = std - vi_result.stds[idx - 1]
-            delta_text = f" 本步变化 Δ均值={delta_mean:+.3f}, Δ标准差={delta_std:+.3f}。"
-
-        print(
-            f"[{stage}] ELBO = {elbo:.3f}，当前 q(μ) = N({mean:.3f}, {std:.3f}^2)。"
-            f" 梯度指向：{direction_mean}，{direction_std}.{delta_text}"
-        )
-
-    diff_mean = abs(vi_result.mean - exact_mean)
-    diff_std = abs(vi_result.std - exact_std)
-    print(
-        f"最终误差：均值差 {diff_mean:.3e}，标准差差 {diff_std:.3e}。"
-        " 这说明变分分布已很好地贴近精确后验。"
-    )
 
 
 def main():
@@ -319,8 +217,7 @@ def main():
     print(f"精确后验: 均值 = {exact_posterior[0]:.3f}, 标准差 = {exact_posterior[1]:.3f}")
     print(f"样本均值: {np.mean(data):.3f}")
 
-    print_step_explanations(data, config, vi_result, exact_posterior)
-    visualize_inference_steps(data, config, vi_result, exact_posterior)
+    plot_results(data, config, vi_result, exact_posterior)
 
 
 if __name__ == "__main__":
